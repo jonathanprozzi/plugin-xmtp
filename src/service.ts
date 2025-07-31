@@ -25,60 +25,51 @@ import { createSCWSigner, createEOASigner } from "./helper";
  */
 function getChannelType(conversation: any): ChannelType {
   try {
-    console.log('🔍 [DEBUG] getChannelType() CALLED - This should detect GROUP!');
-    logger.info('🔍 [DEBUG] getChannelType() - Raw conversation object:', {
-      conversationType: conversation?.conversationType,
-      conversationTypeType: typeof conversation?.conversationType,
-      membersType: typeof conversation?.members,
-      hasMembers: !!conversation?.members,
-      conversationKeys: conversation ? Object.keys(conversation) : 'null',
-      hasMembersMethod: typeof conversation?.members === 'function',
-      hasAddMembers: typeof conversation?.addMembers === 'function',
-      hasRemoveMembers: typeof conversation?.removeMembers === 'function',
-    });
 
     // Check for XMTP conversation type property
     if (conversation && typeof conversation.conversationType === 'number') {
-      logger.info(`🎯 [DEBUG] Found numeric conversationType: ${conversation.conversationType}`);
       switch (conversation.conversationType) {
         case 0: // ConversationType.Dm
-          logger.info('✅ [DEBUG] Detected DM conversation (type 0)');
           return ChannelType.DM;
         case 1: // ConversationType.Group
-          logger.info('✅ [DEBUG] Detected GROUP conversation (type 1)');
           return ChannelType.GROUP;
         case 2: // ConversationType.Sync
-          logger.info('✅ [DEBUG] Detected SYNC conversation (type 2), treating as DM');
           return ChannelType.DM; // Treat sync conversations as DM
         default:
-          logger.warn(`❌ [DEBUG] Unknown XMTP conversation type: ${conversation.conversationType}`);
           return ChannelType.DM;
       }
     }
 
     // Fallback: Check if this is a group based on available methods
-    logger.info('🔄 [DEBUG] No conversationType found, trying method-based detection');
+    const conversationProto = conversation ? Object.getPrototypeOf(conversation) : null;
+    const protoMethods = conversationProto ? Object.getOwnPropertyNames(conversationProto) : [];
+    
+    // If conversation has peerInboxId method, it's a DM (1-on-1 conversation)
+    if (protoMethods.includes('peerInboxId')) {
+      return ChannelType.DM;
+    }
     
     // If conversation has group management methods, it's likely a group
     if (conversation && (
       typeof conversation.addMembers === 'function' ||
       typeof conversation.removeMembers === 'function' ||
       typeof conversation.addAdmin === 'function' ||
-      typeof conversation.isAdmin === 'function'
+      typeof conversation.isAdmin === 'function' ||
+      protoMethods.includes('addMembers') ||
+      protoMethods.includes('removeMembers')
     )) {
-      logger.info('✅ [DEBUG] Detected GROUP by available methods (addMembers, removeMembers, etc.)');
       return ChannelType.GROUP;
     }
-
-    // Note: Can't call async members() method in sync function
-    // But we already detected GROUP by methods above, so this fallback isn't needed
-    logger.info('🔍 [DEBUG] Skipping members() method call (would require async)');
-
-    // Default to DM if we can't determine
-    logger.info('⚠️ [DEBUG] Defaulting to DM - no reliable detection method found');
+    
+    // Check if members property exists and is callable
+    if (conversation && typeof conversation.members === 'function') {
+      return ChannelType.GROUP;
+    }
+    
+    // Default to DM if we can't determine (safer for privacy)
     return ChannelType.DM;
   } catch (error) {
-    logger.error('💥 [DEBUG] Error in getChannelType:', error);
+    logger.error('Error in getChannelType:', error);
     return ChannelType.DM; // Safe default
   }
 }
@@ -111,6 +102,31 @@ export class XmtpService extends Service {
 
   stop(): Promise<void> {
    return Promise.resolve();
+  }
+
+  /**
+   * Send a proactive message to an XMTP group by conversation ID
+   * This allows sending messages without being in a conversation context
+   */
+  async sendProactiveMessage(conversationId: string, message: string): Promise<string> {
+    try {
+      logger.info(`🚀 Sending proactive message to conversation ${conversationId}`);
+      
+      // Get the conversation by ID
+      const conversation = await this.client.conversations.getConversationById(conversationId);
+      if (!conversation) {
+        throw new Error(`Could not find XMTP conversation with ID: ${conversationId}`);
+      }
+      
+      // Send the message
+      const messageId = await conversation.send(message);
+      logger.success(`✅ Proactive message sent to ${conversationId}: ${messageId}`);
+      
+      return messageId;
+    } catch (error) {
+      logger.error(`❌ Failed to send proactive message to ${conversationId}:`, error);
+      throw error;
+    }
   }
 
   private async setupClient() {
@@ -152,30 +168,16 @@ export class XmtpService extends Service {
       }
 
       logger.success(
-        `Received message: ${message.content as string} by ${
-          message.senderInboxId
-        }`
+        `Received message: ${message.content as string} from sender`
       );
 
-      logger.info('🔍 [DEBUG] Fetching conversation by ID:', message.conversationId);
       const conversation = await this.client.conversations.getConversationById(
         message.conversationId
       );
 
       if (!conversation) {
-        logger.error("❌ [DEBUG] Unable to find conversation, skipping");
         return;
       }
-
-      logger.info('✅ [DEBUG] Conversation found, inspecting properties:', {
-        conversationId: conversation.id || 'unknown',
-        conversationType: conversation.conversationType,
-        hasMembers: !!conversation.members,
-        memberCount: conversation.members?.length || 'unknown',
-        conversationMethods: typeof conversation === 'object' ? Object.getOwnPropertyNames(Object.getPrototypeOf(conversation)) : 'not an object',
-      });
-
-      logger.success(`Sending "gm" response...`);
 
       await this.processMessage(message, conversation);
 
@@ -188,67 +190,53 @@ export class XmtpService extends Service {
     conversation: Conversation
   ) {
     try {
-      logger.info('🚨 [DEBUG] processMessage ENTRY POINT - This should be a GROUP!', {
-        conversationId: message.conversationId,
-        senderInboxId: message.senderInboxId,
-        conversationObjectType: typeof conversation,
-        conversationExists: !!conversation,
-      });
       const text = message?.content ?? "";
       const entityId = createUniqueUuid(this.runtime, message.senderInboxId);
       const messageId = stringToUuid(message.id as string);
       const userId = stringToUuid(message.senderInboxId as string);
       const roomId = stringToUuid(message.conversationId as string);
 
-      logger.info('🚀 [DEBUG] Starting processMessage with conversation object');
-      
-      // Deep inspection of conversation object
-      logger.info('🔬 [DEBUG] Conversation object deep inspection:', {
-        conversationId: conversation.id,
-        conversationType: conversation.conversationType,
-        conversationTypeType: typeof conversation.conversationType,
-        isConversationTypeNumber: typeof conversation.conversationType === 'number',
-        allProperties: conversation ? Object.keys(conversation) : 'null conversation',
-        membersExists: 'members' in conversation,
-        membersType: typeof conversation.members,
-        membersLength: conversation.members?.length,
-        membersArray: conversation.members,
-      });
-
       const channelType = getChannelType(conversation);
-      
-      logger.info(`📋 [DEBUG] Final processing results:`, {
-        conversationId: message.conversationId,
-        originalConversationType: conversation.conversationType,
-        memberCount: conversation.members?.length,
-        detectedChannelType: channelType === ChannelType.DM ? 'DM' : 'GROUP',
-        channelTypeEnum: channelType,
-        senderInboxId: message.senderInboxId,
-      });
 
-      logger.info('🔗 [DEBUG] Calling ensureConnection with:', {
+      // Resolve Ethereum address for userName to avoid inboxId contamination in conversation context
+      let resolvedUserName = message.senderInboxId; // fallback
+      try {
+        logger.info('🔍 Attempting to resolve address for inboxId:', message.senderInboxId);
+        const inboxStates = await this.client.preferences.inboxStateFromInboxIds([message.senderInboxId], false);
+        logger.info('📋 InboxStates received:', inboxStates.length);
+        
+        if (inboxStates.length > 0) {
+          const ethAddresses = inboxStates[0].identifiers
+            .filter((id) => id.identifierKind === 0) // Ethereum only
+            .map((id) => id.identifier);
+          
+          logger.info('🔍 Found Ethereum addresses:', ethAddresses);
+          
+          if (ethAddresses.length > 0) {
+            resolvedUserName = ethAddresses[0]; // Use resolved Ethereum address
+            logger.info('✅ Resolved userName:', resolvedUserName);
+          } else {
+            logger.warn('⚠️ No Ethereum addresses found for inboxId');
+          }
+        } else {
+          logger.warn('⚠️ No inbox states returned for inboxId');
+        }
+      } catch (error) {
+        logger.error('❌ Address resolution failed:', error);
+        // Continue with inboxId fallback
+      }
+
+      logger.info('🆔 Entity IDs generated:', {
+        senderInboxId: message.senderInboxId,
+        startsWithNumber: /^[0-9]/.test(message.senderInboxId),
         entityId,
-        userName: message.senderInboxId,
         userId,
-        roomId,
-        channelId: message.conversationId,
-        serverId: message.conversationId,
-        source: "xmtp",
-        type: channelType,
-        typeString: channelType === ChannelType.DM ? 'DM' : 'GROUP',
-        typeValue: channelType,
-        ChannelTypeDM: ChannelType.DM,
-        ChannelTypeGROUP: ChannelType.GROUP,
-        typeComparison: {
-          isDM: channelType === ChannelType.DM,
-          isGROUP: channelType === ChannelType.GROUP,
-        },
-        worldId: roomId,
+        resolvedUserName
       });
 
       await this.runtime.ensureConnection({
         entityId,
-        userName: message.senderInboxId,
+        userName: resolvedUserName,
         userId,
         roomId,
         channelId: message.conversationId,
@@ -261,12 +249,20 @@ export class XmtpService extends Service {
       const content: Content = {
         text,
         source: "xmtp",
+        channelType: channelType,
         inReplyTo: undefined,
         metadata: {
           senderInboxId: message.senderInboxId,
-          senderAddress: message.senderInboxId,
+          senderAddress: resolvedUserName, // Include resolved address for MCP context
+          // This ensures MCP tool selection can see the proper Ethereum address
         },
       };
+
+      logger.info('📦 Message metadata with resolved address:', {
+        senderInboxId: message.senderInboxId,
+        senderAddress: resolvedUserName,
+        source: 'xmtp'
+      });
 
       const memory: Memory = {
         id: messageId,
