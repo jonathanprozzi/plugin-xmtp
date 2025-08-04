@@ -1,6 +1,7 @@
 {
-  "name": "@elizaos/plugin-xmtp",
-  "version": "1.0.4",
+  "name": "@jonathanprozzi/plugin-xmtp",
+  "version": "1.2.0-jp-fork.2",
+  "description": "XMTP plugin for ElizaOS (Fork to support different conversation types)",
   "main": "dist/index.js",
   "type": "module",
   "types": "dist/index.d.ts",
@@ -16,7 +17,7 @@
   },
   "dependencies": {
     "@elizaos/core": "^1.0.4",
-    "@xmtp/node-sdk": "2.0.3",
+    "@xmtp/node-sdk": "^3.2.0",
     "sharp": "0.34.1",
     "tsup": "8.3.5",
     "uint8arrays": "^5.1.0",
@@ -68,11 +69,17 @@
         "required": false,
         "default": "production",
         "sensitive": false
+      },
+      "ENCRYPTION_KEY": {
+        "type": "string",
+        "description": "Hex-encoded 32-byte encryption key for XMTP database persistence across deployments.",
+        "required": false,
+        "sensitive": true
       }
     }
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/elizaos-plugins/plugin-xmtp.git"
+    "url": "git+https://github.com/jonathanprozzi/plugin-xmtp.git"
   }
 }
