@@ -10,18 +10,19 @@ import {
   Memory,
   Service,
   stringToUuid,
-} from "@elizaos/core";
+} from '@elizaos/core';
 import {
   Conversation,
   DecodedMessage,
   Client as XmtpClient,
-} from "@xmtp/node-sdk";
-import { XMTP_SERVICE_NAME } from "./constants";
+} from '@xmtp/node-sdk';
+import { XMTP_SERVICE_NAME } from './constants';
 import {
   createSCWSigner,
   createEOASigner,
   getEncryptionKeyFromHex,
-} from "./helper";
+} from './helper';
+import fs from 'fs';
 
 /**
  * Determine the correct channel type based on XMTP conversation
@@ -30,7 +31,7 @@ import {
 function getChannelType(conversation: any): ChannelType {
   try {
     // Check for XMTP conversation type property
-    if (conversation && typeof conversation.conversationType === "number") {
+    if (conversation && typeof conversation.conversationType === 'number') {
       switch (conversation.conversationType) {
         case 0: // ConversationType.Dm
           return ChannelType.DM;
@@ -52,32 +53,32 @@ function getChannelType(conversation: any): ChannelType {
       : [];
 
     // If conversation has peerInboxId method, it's a DM (1-on-1 conversation)
-    if (protoMethods.includes("peerInboxId")) {
+    if (protoMethods.includes('peerInboxId')) {
       return ChannelType.DM;
     }
 
     // If conversation has group management methods, it's likely a group
     if (
       conversation &&
-      (typeof conversation.addMembers === "function" ||
-        typeof conversation.removeMembers === "function" ||
-        typeof conversation.addAdmin === "function" ||
-        typeof conversation.isAdmin === "function" ||
-        protoMethods.includes("addMembers") ||
-        protoMethods.includes("removeMembers"))
+      (typeof conversation.addMembers === 'function' ||
+        typeof conversation.removeMembers === 'function' ||
+        typeof conversation.addAdmin === 'function' ||
+        typeof conversation.isAdmin === 'function' ||
+        protoMethods.includes('addMembers') ||
+        protoMethods.includes('removeMembers'))
     ) {
       return ChannelType.GROUP;
     }
 
     // Check if members property exists and is callable
-    if (conversation && typeof conversation.members === "function") {
+    if (conversation && typeof conversation.members === 'function') {
       return ChannelType.GROUP;
     }
 
     // Default to DM if we can't determine (safer for privacy)
     return ChannelType.DM;
   } catch (error) {
-    logger.error("Error in getChannelType:", error);
+    logger.error('Error in getChannelType:', error);
     return ChannelType.DM; // Safe default
   }
 }
@@ -86,7 +87,7 @@ export class XmtpService extends Service {
   static serviceType = XMTP_SERVICE_NAME;
 
   capabilityDescription =
-    "The agent is able to send and receive messages using XMTP.";
+    'The agent is able to send and receive messages using XMTP.';
 
   private client: XmtpClient;
 
@@ -95,7 +96,7 @@ export class XmtpService extends Service {
   }
 
   static async start(runtime: IAgentRuntime): Promise<Service> {
-    logger.log("Constructing new XmtpService...");
+    logger.log('Constructing new XmtpService...');
 
     const service = new XmtpService(runtime);
 
@@ -118,11 +119,11 @@ export class XmtpService extends Service {
    */
   async sendProactiveMessage(
     conversationId: string,
-    message: string,
+    message: string
   ): Promise<string> {
     try {
       logger.info(
-        `🚀 Sending proactive message to conversation ${conversationId}`,
+        `🚀 Sending proactive message to conversation ${conversationId}`
       );
 
       // Get the conversation by ID
@@ -130,35 +131,54 @@ export class XmtpService extends Service {
         await this.client.conversations.getConversationById(conversationId);
       if (!conversation) {
         throw new Error(
-          `Could not find XMTP conversation with ID: ${conversationId}`,
+          `Could not find XMTP conversation with ID: ${conversationId}`
         );
       }
 
       // Send the message
       const messageId = await conversation.send(message);
       logger.success(
-        `✅ Proactive message sent to ${conversationId}: ${messageId}`,
+        `✅ Proactive message sent to ${conversationId}: ${messageId}`
       );
 
       return messageId;
     } catch (error) {
       logger.error(
         `❌ Failed to send proactive message to ${conversationId}:`,
-        error,
+        error
       );
       throw error;
     }
   }
 
   private async setupClient() {
-    const walletKey = this.runtime.getSetting("WALLET_KEY");
-    const encryptionKey = this.runtime.getSetting("ENCRYPTION_KEY");
-    const signerType = this.runtime.getSetting("XMTP_SIGNER_TYPE");
-    const chainId = this.runtime.getSetting("XMTP_SCW_CHAIN_ID");
-    const env = this.runtime.getSetting("XMTP_ENV") || "production";
+    const walletKey = this.runtime.getSetting('WALLET_KEY');
+    const encryptionKey = this.runtime.getSetting('ENCRYPTION_KEY');
+    const signerType = this.runtime.getSetting('XMTP_SIGNER_TYPE');
+    const chainId = this.runtime.getSetting('XMTP_SCW_CHAIN_ID');
+    const env = this.runtime.getSetting('XMTP_ENV') || 'production';
+    const dbPathSetting =
+      this.runtime.getSetting('XMTP_DB_PATH') || '/app/data';
+
+    const getDbPath = (env: string, prefix: string = 'xmtp') => {
+      if (process.env.BUN_ENV === 'development') {
+        return `.data/${prefix}-${env}.db3`;
+      }
+
+      // Create database directory if it doesn't exist
+      if (!fs.existsSync(dbPathSetting)) {
+        fs.mkdirSync(dbPathSetting, { recursive: true });
+      }
+      const dbPath = `${dbPathSetting}/${prefix}-${env}.db3`;
+      console.log('xmtp dbPath:', dbPath);
+
+      return dbPath;
+    };
+
+    console.log('xmtp dbPath:', getDbPath(env));
 
     const signer =
-      signerType === "SCW"
+      signerType === 'SCW'
         ? createSCWSigner(walletKey, BigInt(chainId))
         : createEOASigner(walletKey);
 
@@ -167,21 +187,25 @@ export class XmtpService extends Service {
       ? getEncryptionKeyFromHex(encryptionKey)
       : undefined;
 
-    const client = await XmtpClient.create(signer, { env, dbEncryptionKey });
+    const client = await XmtpClient.create(signer, {
+      env,
+      dbEncryptionKey,
+      dbPath: getDbPath(env),
+    });
 
     this.client = client;
 
     logger.success(
-      "XMTP client created successfully with inboxId: ",
-      this.client.inboxId,
+      'XMTP client created successfully with inboxId: ',
+      this.client.inboxId
     );
     if (dbEncryptionKey) {
       logger.success(
-        "Database encryption key configured for persistent installations",
+        'Database encryption key configured for persistent installations'
       );
     } else {
       logger.warn(
-        "No ENCRYPTION_KEY provided - new installations will be created on each restart",
+        'No ENCRYPTION_KEY provided - new installations will be created on each restart'
       );
     }
   }
@@ -189,14 +213,14 @@ export class XmtpService extends Service {
   private async setupMessageHandler() {
     this.client.conversations.streamAllMessages(async (err, message) => {
       if (err) {
-        logger.error("Error streaming messages", err);
+        logger.error('Error streaming messages', err);
         return;
       }
 
       if (
         message?.senderInboxId.toLowerCase() ===
           this.client.inboxId.toLowerCase() ||
-        message?.contentType?.typeId !== "text"
+        message?.contentType?.typeId !== 'text'
       ) {
         return;
       }
@@ -207,11 +231,11 @@ export class XmtpService extends Service {
       }
 
       logger.success(
-        `Received message: ${message.content as string} from sender`,
+        `Received message: ${message.content as string} from sender`
       );
 
       const conversation = await this.client.conversations.getConversationById(
-        message.conversationId,
+        message.conversationId
       );
 
       if (!conversation) {
@@ -220,16 +244,16 @@ export class XmtpService extends Service {
 
       await this.processMessage(message, conversation);
 
-      logger.success("Waiting for messages...");
+      logger.success('Waiting for messages...');
     });
   }
 
   private async processMessage(
     message: DecodedMessage<any>,
-    conversation: Conversation,
+    conversation: Conversation
   ) {
     try {
-      const text = message?.content ?? "";
+      const text = message?.content ?? '';
       const entityId = createUniqueUuid(this.runtime, message.senderInboxId);
       const messageId = stringToUuid(message.id as string);
       const userId = stringToUuid(message.senderInboxId as string);
@@ -241,38 +265,38 @@ export class XmtpService extends Service {
       let resolvedUserName = message.senderInboxId; // fallback
       try {
         logger.info(
-          "🔍 Attempting to resolve address for inboxId:",
-          message.senderInboxId,
+          '🔍 Attempting to resolve address for inboxId:',
+          message.senderInboxId
         );
         const inboxStates =
           await this.client.preferences.inboxStateFromInboxIds(
             [message.senderInboxId],
-            false,
+            false
           );
-        logger.info("📋 InboxStates received:", inboxStates.length);
+        logger.info('📋 InboxStates received:', inboxStates.length);
 
         if (inboxStates.length > 0) {
           const ethAddresses = inboxStates[0].identifiers
             .filter((id) => id.identifierKind === 0) // Ethereum only
             .map((id) => id.identifier);
 
-          logger.info("🔍 Found Ethereum addresses:", ethAddresses);
+          logger.info('🔍 Found Ethereum addresses:', ethAddresses);
 
           if (ethAddresses.length > 0) {
             resolvedUserName = ethAddresses[0]; // Use resolved Ethereum address
-            logger.info("✅ Resolved userName:", resolvedUserName);
+            logger.info('✅ Resolved userName:', resolvedUserName);
           } else {
-            logger.warn("⚠️ No Ethereum addresses found for inboxId");
+            logger.warn('⚠️ No Ethereum addresses found for inboxId');
           }
         } else {
-          logger.warn("⚠️ No inbox states returned for inboxId");
+          logger.warn('⚠️ No inbox states returned for inboxId');
         }
       } catch (error) {
-        logger.error("❌ Address resolution failed:", error);
+        logger.error('❌ Address resolution failed:', error);
         // Continue with inboxId fallback
       }
 
-      logger.info("🆔 Entity IDs generated:", {
+      logger.info('🆔 Entity IDs generated:', {
         senderInboxId: message.senderInboxId,
         startsWithNumber: /^[0-9]/.test(message.senderInboxId),
         entityId,
@@ -287,14 +311,14 @@ export class XmtpService extends Service {
         roomId,
         channelId: message.conversationId,
         serverId: message.conversationId,
-        source: "xmtp",
+        source: 'xmtp',
         type: channelType,
         worldId: roomId,
       });
 
       const content: Content = {
         text,
-        source: "xmtp",
+        source: 'xmtp',
         channelType: channelType,
         inReplyTo: undefined,
         metadata: {
@@ -304,10 +328,10 @@ export class XmtpService extends Service {
         },
       };
 
-      logger.info("📦 Message metadata with resolved address:", {
+      logger.info('📦 Message metadata with resolved address:', {
         senderInboxId: message.senderInboxId,
         senderAddress: resolvedUserName,
-        source: "xmtp",
+        source: 'xmtp',
       });
 
       const memory: Memory = {
@@ -320,17 +344,17 @@ export class XmtpService extends Service {
 
       const callback: HandlerCallback = async (
         content: Content,
-        _files?: string[],
+        _files?: string[]
       ) => {
         try {
           if (!content.text) return [];
 
           const responseMessageId = await conversation.send(content.text);
 
-          logger.info("💾 [DEBUG] Creating response memory with channelType:", {
+          logger.info('💾 [DEBUG] Creating response memory with channelType:', {
             responseMessageId,
             channelType,
-            channelTypeString: channelType === ChannelType.DM ? "DM" : "GROUP",
+            channelTypeString: channelType === ChannelType.DM ? 'DM' : 'GROUP',
             inReplyTo: messageId,
           });
 
@@ -352,11 +376,11 @@ export class XmtpService extends Service {
             },
           };
 
-          await this.runtime.createMemory(responseMemory, "messages");
+          await this.runtime.createMemory(responseMemory, 'messages');
 
           return [responseMemory];
         } catch (error) {
-          elizaLogger.error("Error in callback", error);
+          elizaLogger.error('Error in callback', error);
         }
       };
 
@@ -364,10 +388,10 @@ export class XmtpService extends Service {
         runtime: this.runtime,
         message: memory,
         callback,
-        source: "xmtp",
+        source: 'xmtp',
       });
     } catch (error) {
-      elizaLogger.error("Error in onMessage", error);
+      elizaLogger.error('Error in onMessage', error);
     }
   }
 }

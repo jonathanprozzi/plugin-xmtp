@@ -1,6 +1,6 @@
 {
   "name": "@jonathanprozzi/plugin-xmtp",
-  "version": "1.2.0-jp-fork.2",
+  "version": "1.2.0-jp-fork.3",
   "description": "XMTP plugin for ElizaOS (Fork to support different conversation types)",
   "main": "dist/index.js",
   "type": "module",
@@ -73,6 +73,12 @@
       "ENCRYPTION_KEY": {
         "type": "string",
         "description": "Hex-encoded 32-byte encryption key for XMTP database persistence across deployments.",
+        "required": false,
+        "sensitive": true
+      },
+      "XMTP_DB_PATH": {
+        "type": "string",
+        "description": "Path to the XMTP database.",
         "required": false,
         "sensitive": true
       }
