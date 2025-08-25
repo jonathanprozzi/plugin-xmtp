@@ -16,6 +16,11 @@ import {
   DecodedMessage,
   Client as XmtpClient,
 } from '@xmtp/node-sdk';
+import {
+  ContentTypeReply,
+  ReplyCodec,
+} from '@xmtp/content-type-reply';
+import { ContentTypeText } from '@xmtp/content-type-text';
 import { XMTP_SERVICE_NAME } from './constants';
 import {
   createSCWSigner,
@@ -96,13 +101,15 @@ export class XmtpService extends Service {
   }
 
   static async start(runtime: IAgentRuntime): Promise<Service> {
-    logger.log('Constructing new XmtpService...');
+    logger.log('🚀 Starting XmtpService with reply support...');
 
     const service = new XmtpService(runtime);
 
     await service.setupClient();
 
     await service.setupMessageHandler();
+    
+    logger.success('✅ XmtpService started successfully with reply threading enabled');
 
     return service;
   }
@@ -191,6 +198,7 @@ export class XmtpService extends Service {
       env,
       dbEncryptionKey,
       dbPath: getDbPath(env),
+      codecs: [new ReplyCodec()],
     });
 
     this.client = client;
@@ -211,17 +219,26 @@ export class XmtpService extends Service {
   }
 
   private async setupMessageHandler() {
+    logger.info('📡 Setting up XMTP message streaming with reply support...');
+    
     this.client.conversations.streamAllMessages(async (err, message) => {
       if (err) {
         logger.error('Error streaming messages', err);
         return;
       }
 
+      // Check if it's from our own inbox
       if (
         message?.senderInboxId.toLowerCase() ===
-          this.client.inboxId.toLowerCase() ||
-        message?.contentType?.typeId !== 'text'
+          this.client.inboxId.toLowerCase()
       ) {
+        return;
+      }
+
+      // Check content type - support both text and reply messages
+      const contentTypeId = message?.contentType?.typeId;
+      if (contentTypeId !== 'text' && contentTypeId !== 'reply') {
+        logger.info(`Skipping message with unsupported content type: ${contentTypeId}`);
         return;
       }
 
@@ -253,7 +270,41 @@ export class XmtpService extends Service {
     conversation: Conversation
   ) {
     try {
-      const text = message?.content ?? '';
+      // Extract text content based on message type
+      let text = '';
+      let replyReference = undefined;
+      
+      if (message?.contentType?.typeId === 'reply') {
+        // Reply message structure: { reference: messageId, contentType: ContentTypeText, content: "text" }
+        const replyContent = message?.content;
+        text = replyContent?.content ?? '';
+        replyReference = replyContent?.reference;
+        logger.info(`📩 Processing reply message to ${replyReference}: ${text}`);
+        
+        // Check if this is a reply to one of the agent's messages
+        // This helps the agent know it should respond even in groups
+        try {
+          const originalMessage = await this.runtime.getMemoryById(stringToUuid(replyReference));
+          if (originalMessage?.agentId === this.runtime.agentId) {
+            logger.info(`✅ Reply is to agent's message - should respond regardless of mention`);
+            // Add agent name to text to trigger mention detection in groups
+            // This ensures the agent responds to replies to its messages even without explicit mention
+            if (!text.toLowerCase().includes(this.runtime.character.name.toLowerCase())) {
+              text = `@${this.runtime.character.name.toLowerCase()} ${text}`;
+              logger.info(`📝 Modified text for mention detection: ${text}`);
+            } else {
+              logger.info(`📝 Text already contains agent mention, no modification needed`);
+            }
+          } else {
+            logger.info(`ℹ️ Reply is to another user's message`);
+          }
+        } catch (error) {
+          logger.warn(`⚠️ Could not check if reply is to agent's message: ${error}`);
+        }
+      } else {
+        // Regular text message
+        text = message?.content ?? '';
+      }
       const entityId = createUniqueUuid(this.runtime, message.senderInboxId);
       const messageId = stringToUuid(message.id as string);
       const userId = stringToUuid(message.senderInboxId as string);
@@ -320,11 +371,12 @@ export class XmtpService extends Service {
         text,
         source: 'xmtp',
         channelType: channelType,
-        inReplyTo: undefined,
+        inReplyTo: replyReference ? stringToUuid(replyReference) : undefined,
         metadata: {
           senderInboxId: message.senderInboxId,
           senderAddress: resolvedUserName, // Include resolved address for MCP context
           // This ensures MCP tool selection can see the proper Ethereum address
+          ...(replyReference && { replyToMessageId: replyReference }),
         },
       };
 
@@ -332,6 +384,9 @@ export class XmtpService extends Service {
         senderInboxId: message.senderInboxId,
         senderAddress: resolvedUserName,
         source: 'xmtp',
+        isReply: !!replyReference,
+        replyToMessageId: replyReference,
+        channelType: channelType === ChannelType.DM ? 'DM' : 'GROUP',
       });
 
       const memory: Memory = {
@@ -349,13 +404,32 @@ export class XmtpService extends Service {
         try {
           if (!content.text) return [];
 
-          const responseMessageId = await conversation.send(content.text);
+          let responseMessageId;
+          
+          // If the original message was a reply, send our response as a reply too
+          if (replyReference) {
+            logger.info(`↩️ Sending reply to maintain thread for message: ${message.id}`);
+            // Create the reply content structure
+            const replyContent = {
+              reference: message.id, // Reply to the message we're responding to
+              contentType: ContentTypeText,
+              content: content.text,
+            };
+            
+            // Send using the reply content type
+            responseMessageId = await conversation.send(replyContent, ContentTypeReply);
+            logger.info(`✅ Sent threaded reply: ${responseMessageId}`);
+          } else {
+            // Regular message, send normally
+            responseMessageId = await conversation.send(content.text);
+          }
 
           logger.info('💾 [DEBUG] Creating response memory with channelType:', {
             responseMessageId,
             channelType,
             channelTypeString: channelType === ChannelType.DM ? 'DM' : 'GROUP',
             inReplyTo: messageId,
+            isThreadedReply: !!replyReference,
           });
 
           const responseMemory: Memory = {
