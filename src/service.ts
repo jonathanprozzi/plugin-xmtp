@@ -17,6 +17,10 @@ import {
   Client as XmtpClient,
 } from '@xmtp/node-sdk';
 import {
+  ContentTypeReaction,
+  ReactionCodec,
+} from '@xmtp/content-type-reaction';
+import {
   ContentTypeReply,
   ReplyCodec,
 } from '@xmtp/content-type-reply';
@@ -101,7 +105,7 @@ export class XmtpService extends Service {
   }
 
   static async start(runtime: IAgentRuntime): Promise<Service> {
-    logger.log('🚀 Starting XmtpService with reply support...');
+    logger.log('🚀 Starting XmtpService with reply and reaction support...');
 
     const service = new XmtpService(runtime);
 
@@ -109,7 +113,7 @@ export class XmtpService extends Service {
 
     await service.setupMessageHandler();
     
-    logger.success('✅ XmtpService started successfully with reply threading enabled');
+    logger.success('✅ XmtpService started successfully with reply threading and reaction support enabled');
 
     return service;
   }
@@ -198,7 +202,7 @@ export class XmtpService extends Service {
       env,
       dbEncryptionKey,
       dbPath: getDbPath(env),
-      codecs: [new ReplyCodec()],
+      codecs: [new ReactionCodec(), new ReplyCodec()],
     });
 
     this.client = client;
@@ -219,7 +223,7 @@ export class XmtpService extends Service {
   }
 
   private async setupMessageHandler() {
-    logger.info('📡 Setting up XMTP message streaming with reply support...');
+    logger.info('📡 Setting up XMTP message streaming with reply and reaction support...');
     
     this.client.conversations.streamAllMessages(async (err, message) => {
       if (err) {
@@ -235,9 +239,9 @@ export class XmtpService extends Service {
         return;
       }
 
-      // Check content type - support both text and reply messages
+      // Check content type - support text, reply, and reaction messages
       const contentTypeId = message?.contentType?.typeId;
-      if (contentTypeId !== 'text' && contentTypeId !== 'reply') {
+      if (contentTypeId !== 'text' && contentTypeId !== 'reply' && contentTypeId !== 'reaction') {
         logger.info(`Skipping message with unsupported content type: ${contentTypeId}`);
         return;
       }
@@ -273,6 +277,9 @@ export class XmtpService extends Service {
       // Extract text content based on message type
       let text = '';
       let replyReference = undefined;
+      let reactionReference = undefined;
+      let reactionContent = undefined;
+      let reactionAction = undefined;
       
       if (message?.contentType?.typeId === 'reply') {
         // Reply message structure: { reference: messageId, contentType: ContentTypeText, content: "text" }
@@ -300,6 +307,34 @@ export class XmtpService extends Service {
           }
         } catch (error) {
           logger.warn(`⚠️ Could not check if reply is to agent's message: ${error}`);
+        }
+      } else if (message?.contentType?.typeId === 'reaction') {
+        // Reaction message structure: { reference: messageId, action: "added"/"removed", content: "smile" }
+        const reaction = message?.content;
+        reactionReference = reaction?.reference;
+        reactionAction = reaction?.action;
+        reactionContent = reaction?.content;
+        text = `reacted with ${reactionContent} (${reactionAction})`;
+        logger.info(`😀 Processing reaction to ${reactionReference}: ${reactionContent} (${reactionAction})`);
+        
+        // Check if this is a reaction to one of the agent's messages
+        // This helps the agent know it should respond even in groups
+        try {
+          const originalMessage = await this.runtime.getMemoryById(stringToUuid(reactionReference));
+          if (originalMessage?.agentId === this.runtime.agentId) {
+            logger.info(`✅ Reaction is to agent's message - should respond regardless of mention`);
+            // Add agent name to text to trigger mention detection in groups for reactions to agent messages
+            if (!text.toLowerCase().includes(this.runtime.character.name.toLowerCase())) {
+              text = `@${this.runtime.character.name.toLowerCase()} ${text}`;
+              logger.info(`📝 Modified reaction text for mention detection: ${text}`);
+            } else {
+              logger.info(`📝 Reaction text already contains agent mention, no modification needed`);
+            }
+          } else {
+            logger.info(`ℹ️ Reaction is to another user's message`);
+          }
+        } catch (error) {
+          logger.warn(`⚠️ Could not check if reaction is to agent's message: ${error}`);
         }
       } else {
         // Regular text message
@@ -371,12 +406,19 @@ export class XmtpService extends Service {
         text,
         source: 'xmtp',
         channelType: channelType,
-        inReplyTo: replyReference ? stringToUuid(replyReference) : undefined,
+        inReplyTo: replyReference ? stringToUuid(replyReference) : 
+                   reactionReference ? stringToUuid(reactionReference) : undefined,
         metadata: {
           senderInboxId: message.senderInboxId,
           senderAddress: resolvedUserName, // Include resolved address for MCP context
           // This ensures MCP tool selection can see the proper Ethereum address
           ...(replyReference && { replyToMessageId: replyReference }),
+          ...(reactionReference && { 
+            reactionToMessageId: reactionReference,
+            reactionContent: reactionContent,
+            reactionAction: reactionAction,
+            messageType: 'reaction'
+          }),
         },
       };
 
@@ -385,7 +427,11 @@ export class XmtpService extends Service {
         senderAddress: resolvedUserName,
         source: 'xmtp',
         isReply: !!replyReference,
+        isReaction: !!reactionReference,
         replyToMessageId: replyReference,
+        reactionToMessageId: reactionReference,
+        reactionContent: reactionContent,
+        reactionAction: reactionAction,
         channelType: channelType === ChannelType.DM ? 'DM' : 'GROUP',
       });
 
