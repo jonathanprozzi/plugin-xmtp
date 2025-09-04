@@ -55,3 +55,70 @@ export const generateEncryptionKeyHex = () => {
 export const getEncryptionKeyFromHex = (hex: string) => {
   return fromString(hex, "hex");
 };
+
+// Action and Intent helper functions
+import { ActionsContent, Action } from './actions';
+import { IntentContent } from './intent';
+
+export const createActionsContent = (
+  id: string,
+  description: string,
+  actions: Action[],
+  expiresAt?: string
+): ActionsContent => {
+  return {
+    id,
+    description,
+    actions,
+    ...(expiresAt && { expiresAt }),
+  };
+};
+
+export const createAction = (
+  id: string,
+  label: string,
+  style?: 'primary' | 'secondary' | 'danger',
+  imageUrl?: string,
+  expiresAt?: string
+): Action => {
+  return {
+    id,
+    label,
+    ...(style && { style }),
+    ...(imageUrl && { imageUrl }),
+    ...(expiresAt && { expiresAt }),
+  };
+};
+
+export const createIntentContent = (
+  id: string,
+  actionId: string,
+  metadata?: Record<string, any>
+): IntentContent => {
+  return {
+    id,
+    actionId,
+    ...(metadata && { metadata }),
+  };
+};
+
+export const validateActionsContent = (content: any): content is ActionsContent => {
+  return (
+    typeof content === 'object' &&
+    typeof content.id === 'string' &&
+    typeof content.description === 'string' &&
+    Array.isArray(content.actions) &&
+    content.actions.every((action: any) => 
+      typeof action.id === 'string' && 
+      typeof action.label === 'string'
+    )
+  );
+};
+
+export const validateIntentContent = (content: any): content is IntentContent => {
+  return (
+    typeof content === 'object' &&
+    typeof content.id === 'string' &&
+    typeof content.actionId === 'string'
+  );
+};

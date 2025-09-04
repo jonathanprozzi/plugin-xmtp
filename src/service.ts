@@ -25,6 +25,8 @@ import {
   ReplyCodec,
 } from '@xmtp/content-type-reply';
 import { ContentTypeText } from '@xmtp/content-type-text';
+import { ActionsCodec, ContentTypeActions } from './actions';
+import { IntentCodec, ContentTypeIntent } from './intent';
 import { XMTP_SERVICE_NAME } from './constants';
 import {
   createSCWSigner,
@@ -162,6 +164,49 @@ export class XmtpService extends Service {
     }
   }
 
+  /**
+   * Send an actions message to an XMTP conversation
+   * This allows sending interactive buttons for user selection
+   */
+  async sendActions(
+    conversationId: string,
+    actionsContent: any
+  ): Promise<string> {
+    try {
+      logger.info(
+        `🎯 sendActions called with conversationId: ${conversationId}`
+      );
+      logger.info('🎯 ActionsContent:', {
+        id: actionsContent?.id,
+        description: actionsContent?.description,
+        actions: actionsContent?.actions?.length
+      });
+
+      // Get the conversation by ID
+      const conversation =
+        await this.client.conversations.getConversationById(conversationId);
+      if (!conversation) {
+        throw new Error(
+          `Could not find XMTP conversation with ID: ${conversationId}`
+        );
+      }
+
+      // Send the actions message
+      const messageId = await conversation.send(actionsContent, ContentTypeActions);
+      logger.success(
+        `✅ Actions message sent to ${conversationId}: ${messageId}`
+      );
+
+      return messageId;
+    } catch (error) {
+      logger.error(
+        `❌ Failed to send actions message to ${conversationId}:`,
+        error
+      );
+      throw error;
+    }
+  }
+
   private async setupClient() {
     const walletKey = this.runtime.getSetting('WALLET_KEY');
     const encryptionKey = this.runtime.getSetting('ENCRYPTION_KEY');
@@ -202,7 +247,7 @@ export class XmtpService extends Service {
       env,
       dbEncryptionKey,
       dbPath: getDbPath(env),
-      codecs: [new ReactionCodec(), new ReplyCodec()],
+      codecs: [new ReactionCodec(), new ReplyCodec(), new ActionsCodec(), new IntentCodec()],
     });
 
     this.client = client;
@@ -239,9 +284,9 @@ export class XmtpService extends Service {
         return;
       }
 
-      // Check content type - support text, reply, and reaction messages
+      // Check content type - support text, reply, reaction, intent, and actions messages
       const contentTypeId = message?.contentType?.typeId;
-      if (contentTypeId !== 'text' && contentTypeId !== 'reply' && contentTypeId !== 'reaction') {
+      if (contentTypeId !== 'text' && contentTypeId !== 'reply' && contentTypeId !== 'reaction' && contentTypeId !== 'intent' && contentTypeId !== 'actions') {
         logger.info(`Skipping message with unsupported content type: ${contentTypeId}`);
         return;
       }
@@ -280,6 +325,8 @@ export class XmtpService extends Service {
       let reactionReference = undefined;
       let reactionContent = undefined;
       let reactionAction = undefined;
+      let intentData = undefined;
+      let actionsData = undefined;
       
       if (message?.contentType?.typeId === 'reply') {
         // Reply message structure: { reference: messageId, contentType: ContentTypeText, content: "text" }
@@ -336,6 +383,19 @@ export class XmtpService extends Service {
         } catch (error) {
           logger.warn(`⚠️ Could not check if reaction is to agent's message: ${error}`);
         }
+      } else if (message?.contentType?.typeId === 'intent') {
+        // Intent message structure: { id: string, actionId: string, metadata?: {} }
+        const intent = message?.content;
+        intentData = intent;
+        text = `selected action: ${intent?.actionId}`;
+        logger.info(`🎯 Processing intent for action: ${intent?.actionId}`);
+      } else if (message?.contentType?.typeId === 'actions') {
+        // Actions messages are typically sent by agents, not received
+        // But we'll handle them gracefully if received
+        const actions = message?.content;
+        actionsData = actions;
+        text = `received actions: ${actions?.description}`;
+        logger.info(`📋 Processing actions message: ${actions?.id}`);
       } else {
         // Regular text message
         text = message?.content ?? '';
@@ -411,6 +471,9 @@ export class XmtpService extends Service {
         metadata: {
           senderInboxId: message.senderInboxId,
           senderAddress: resolvedUserName, // Include resolved address for MCP context
+          channelId: message.conversationId, // For action handlers to send actions
+          serverId: message.conversationId, // Alternative field for action handlers
+          conversationId: message.conversationId, // Explicit conversation ID for clarity
           // This ensures MCP tool selection can see the proper Ethereum address
           ...(replyReference && { replyToMessageId: replyReference }),
           ...(reactionReference && { 
@@ -418,6 +481,18 @@ export class XmtpService extends Service {
             reactionContent: reactionContent,
             reactionAction: reactionAction,
             messageType: 'reaction'
+          }),
+          ...(intentData && {
+            intentId: intentData.id,
+            actionId: intentData.actionId,
+            intentMetadata: intentData.metadata,
+            messageType: 'intent'
+          }),
+          ...(actionsData && {
+            actionsId: actionsData.id,
+            actionsDescription: actionsData.description,
+            actions: actionsData.actions,
+            messageType: 'actions'
           }),
         },
       };

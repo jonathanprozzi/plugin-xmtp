@@ -1,6 +1,6 @@
 {
   "name": "@jonathanprozzi/plugin-xmtp",
-  "version": "1.2.0-jp-fork.6",
+  "version": "1.2.0-jp-fork.7",
   "description": "XMTP plugin for ElizaOS (Fork to support different conversation and content types)",
   "main": "dist/index.js",
   "type": "module",
@@ -16,7 +16,8 @@
     }
   },
   "dependencies": {
-    "@elizaos/core": "^1.0.4",
+    "@elizaos/core": "^1.5.7",
+    "@xmtp/content-type-primitives": "^2.0.0",
     "@xmtp/content-type-reaction": "^2.0.2",
     "@xmtp/content-type-reply": "^2.0.2",
     "@xmtp/content-type-text": "^2.0.2",
