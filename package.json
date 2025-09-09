@@ -1,6 +1,6 @@
 {
   "name": "@jonathanprozzi/plugin-xmtp",
-  "version": "1.2.0-jp-fork.7",
+  "version": "1.2.0-jp-fork.8",
   "description": "XMTP plugin for ElizaOS (Fork to support different conversation and content types)",
   "main": "dist/index.js",
   "type": "module",

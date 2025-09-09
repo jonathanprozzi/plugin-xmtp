@@ -403,7 +403,11 @@ export class XmtpService extends Service {
       const entityId = createUniqueUuid(this.runtime, message.senderInboxId);
       const messageId = stringToUuid(message.id as string);
       const userId = stringToUuid(message.senderInboxId as string);
-      const roomId = stringToUuid(message.conversationId as string);
+      // Use legacy roomId first (to preserve existing history), with namespaced fallback to avoid collisions
+      const legacyRoomId = stringToUuid(message.conversationId as string);
+      const namespacedKey = `${this.runtime.agentId}:${message.conversationId}`;
+      const namespacedRoomId = stringToUuid(namespacedKey);
+      let roomId = legacyRoomId;
 
       const channelType = getChannelType(conversation);
 
@@ -450,17 +454,36 @@ export class XmtpService extends Service {
         resolvedUserName,
       });
 
-      await this.runtime.ensureConnection({
-        entityId,
-        userName: resolvedUserName,
-        userId,
-        roomId,
-        channelId: message.conversationId,
-        serverId: message.conversationId,
-        source: 'xmtp',
-        type: channelType,
-        worldId: roomId,
-      });
+      // Try with legacy roomId to keep continuity if this room already exists for this agent
+      try {
+        await this.runtime.ensureConnection({
+          entityId,
+          userName: resolvedUserName,
+          userId,
+          roomId: legacyRoomId,
+          channelId: message.conversationId,
+          serverId: message.conversationId,
+          source: 'xmtp',
+          type: channelType,
+          worldId: legacyRoomId,
+        });
+        roomId = legacyRoomId;
+      } catch (error) {
+        // If legacy collides with a row owned by another agent, fall back to namespaced roomId
+        logger.warn(`⚠️ ensureConnection failed on legacy roomId; retrying with namespaced`, error);
+        await this.runtime.ensureConnection({
+          entityId,
+          userName: resolvedUserName,
+          userId,
+          roomId: namespacedRoomId,
+          channelId: message.conversationId,
+          serverId: message.conversationId,
+          source: 'xmtp',
+          type: channelType,
+          worldId: namespacedRoomId,
+        });
+        roomId = namespacedRoomId;
+      }
 
       const content: Content = {
         text,
